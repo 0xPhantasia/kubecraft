@@ -14,10 +14,11 @@ You need to have:
 
 To use that template you can adapt the hosts.yml file to your needs by filling the necessary IP, hostnames and connection informations.
 
-Once the hosts.yml file is populated, you can start the deployment with ```yml ansible-playbook --verbose k8s_quickstart.yml -i hosts.yaml -e ansible_become_pass=<REMOTE_ACCOUNT_PASS>```
+Once the hosts.yml file is populated, you can start the deployment with ```ansible-playbook --verbose k8s_quickstart.yml -i hosts.yaml -e ansible_become_pass=<REMOTE_ACCOUNT_PASS>```
+
 For k8s administration purposes please use the newly created account "kube", **any other account will not work.**
 
-Note: The password REMOTE_ACCOUNT_PASS provided must be the one used by the local sudoer account of every VM to be added to the cluster. It will be reused for the "kube" user. That is set to be improved in the future.
+**Note:** The password REMOTE_ACCOUNT_PASS provided must be the one used by the local sudoer account of every VM to be added to the cluster. It will be reused for the "kube" user. That is set to be improved in the future.
 
 ## Improvements TODO
 
