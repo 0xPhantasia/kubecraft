@@ -5,10 +5,11 @@ Automated and simple on-premise Kubernetes cluster deployment with Ansible and H
 
 You need to have:
 
-- 2 or more running Rocky Linux x64 host, with SSH access to a local sudoer account
+- 2 or more running Rocky Linux >=8 hosts, with SSH access to a local sudoer account on each one
 - An Ansible ready machine or environment
-- Hosts need to be reachable from the Ansible host too for obvious reasons
-- A DNS server configured to work with the hosts
+- Hosts need to be reachable from the Ansible host and between each other on port tcp/22
+- No devices or network configuration must prevent the communication between master and worker nodes on the list of ports to be opened, see "k8s_quickstart.yml" for port list
+- A DNS server configured to work with the hosts, you can also make it work with /etc/hosts
 
 ## Usage
 
