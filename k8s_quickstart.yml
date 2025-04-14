@@ -1,0 +1,249 @@
+---
+- name: Open required firewall ports on master
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Open ports on master
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop:
+        - "8080/tcp"
+        - "6443/tcp"
+        - "2379/tcp"
+        - "2380/tcp"
+        - "10250/tcp"
+        - "10251/tcp"
+        - "10252/tcp"
+        - "10257/tcp"
+        - "10259/tcp"
+        - "179/tcp"
+        - "4789/udp"
+
+- name: Open required firewall ports on workers
+  hosts: k8s_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Open ports on workers
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop:
+        - "179/tcp"
+        - "10250/tcp"
+        - "30000-32767/tcp"
+        - "4789/udp"
+
+- name: Configure kernel modules and sysctl parameters on all nodes
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Write kernel modules config
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Write sysctl config for Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Apply sysctl parameters
+      ansible.builtin.command: sysctl --system
+
+- name: Install and configure containerd on all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Install yum-utils package
+      ansible.builtin.package:
+        name: yum-utils
+        state: present
+
+    - name: Add Docker repository
+      ansible.builtin.yum_repository:
+        name: docker
+        description: Docker CE repository
+        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+        enabled: true
+        gpgcheck: true
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        state: present
+
+    - name: Install containerd
+      ansible.builtin.package:
+        name: containerd.io
+        state: present
+
+    - name: Check if containerd config exists
+      ansible.builtin.stat:
+        path: /etc/containerd/config.toml
+      register: containerd_config
+
+    - name: Backup existing containerd config if present
+      ansible.builtin.command: mv /etc/containerd/config.toml /etc/containerd/config.toml.bkp
+      when: containerd_config.stat.exists
+
+    - name: Generate default containerd config
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+
+    - name: Ensure SystemdCgroup is set to true in containerd config
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Restart and enable containerd service
+      ansible.builtin.service:
+        name: containerd
+        state: restarted
+        enabled: true
+
+- name: Configure Kubernetes repository and install Kubernetes tools on all nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Configure Kubernetes repo file
+      ansible.builtin.copy:
+        dest: /etc/yum.repos.d/kubernetes.repo
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.32/rpm/repodata/repomd.xml.key
+          exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Install kubelet, kubeadm and kubectl
+      ansible.builtin.package:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        disable_excludes: kubernetes
+
+    - name: Enable kubelet service
+      ansible.builtin.service:
+        name: kubelet
+        enabled: true
+
+- name: Initialize kubernetes master node
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure swap is off
+      ansible.builtin.command: swapoff -a
+
+    - name: Initialize kubernetes master node
+      ansible.builtin.command: kubeadm init --control-plane-endpoint={{ inventory_hostname }}
+
+    - name: Get join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: Save join command as a fact
+      ansible.builtin.set_fact:
+        join_command_fact: "{{ join_command.stdout }}"
+
+- name: Join worker nodes into the cluster
+  hosts: k8s_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure swap is off
+      ansible.builtin.command: swapoff -a
+
+    - name: Join worker nodes into the cluster
+      ansible.builtin.command: "{{ hostvars[groups['k8s_masters'][0]]['join_command_fact'] }}"
+
+#- name: Install python-passlib for password hashing
+#  hosts: localhost
+#  become: true
+#  tasks:
+#    - name: Install python-passlib
+#      ansible.builtin.package:
+#      name: python3-passlib
+#      state: present
+
+- name: Create kube user and configure Kubernetes access
+  hosts: k8s_masters
+  become: true
+  tasks:
+    - name: Create user 'kube' and add to wheel group
+      ansible.builtin.user:
+        name: kube
+        password: "{{ ansible_become_pass | password_hash }}" # pacman -S python-passlib is required
+        groups: wheel
+        state: present
+        shell: /bin/bash
+        createhome: true
+
+    - name: Create .kube directory for kube
+      ansible.builtin.file:
+        path: /home/kube/.kube
+        state: directory
+        owner: kube
+        group: kube
+        mode: '0755'
+
+    - name: Copy Kubernetes admin config
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/kube/.kube/config
+        remote_src: true
+        owner: kube
+        group: kube
+        mode: '0644'
+
+    - name: Export KUBECONFIG environment variable
+      ansible.builtin.shell: export KUBECONFIG=/home/kube/.kube/config
+
+    - name: Persist KUBECONFIG environment variable for kube user
+      ansible.builtin.lineinfile:
+        path: /home/kube/.bashrc
+        line: 'export KUBECONFIG=/home/kube/.kube/config'
+        create: yes
+        owner: kube
+        group: kube
+        mode: '0644'
+
+- name: Deploy Calico (Networking) on the master node
+  hosts: k8s_masters
+  gather_facts: false
+  become_user: kube
+  become: true
+  tasks:
+    - name: Download the calico manifest
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/projectcalico/calico/v3.29.2/manifests/calico.yaml
+        dest: /home/kube/.kube/calico.yaml
+
+    - name: Apply Calico manifest
+      ansible.builtin.command: kubectl apply -f /home/kube/.kube/calico.yaml
+
+    - name: Label node as worker
+      ansible.builtin.command: kubectl label node {{ inventory_hostname | regex_search('^([^.]+)') }} node-role.kubernetes.io/worker=worker
