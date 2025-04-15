@@ -30,4 +30,5 @@ For k8s administration purposes please use the newly created account "kube", **a
 - Allow for multiple OS compability (Debian, RHEL, Ubuntu ...)
 - Support of env variables for credentials usage
 - Autoscaling configuration
+- Creaion of SSH keys for kube account
 
